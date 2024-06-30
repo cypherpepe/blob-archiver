@@ -19,13 +19,10 @@ const (
 	FormatSSZ Format = "application/octet-stream"
 )
 
-// BlobSidecarClient is a minimal client for fetching sidecars from the blob service. This client is used instead of an
-// existing client for two reasons.
-// 1) Does not require any endpoints except /eth/v1/blob_sidecar, which is the only endpoint that the Blob API supports
-// 2) Exposes implementation details, e.g. status code, as well as allowing us to specify the format
+// BlobSidecarClient is a minimal client for fetching sidecars from the blob service.
 type BlobSidecarClient interface {
-	// FetchSidecars fetches the sidecars for a given slot from the blob sidecar API. It returns the HTTP status code and
-	// the sidecars.
+	// FetchSidecars fetches the sidecars for a given slot from the blob sidecar API.
+	// It returns the HTTP status code and the sidecars.
 	FetchSidecars(id string, format Format) (int, storage.BlobSidecars, error)
 }
 
@@ -42,6 +39,7 @@ func NewBlobSidecarClient(url string) BlobSidecarClient {
 	}
 }
 
+// FetchSidecars fetches the sidecars for a given slot from the blob sidecar API.
 func (c *httpBlobSidecarClient) FetchSidecars(id string, format Format) (int, storage.BlobSidecars, error) {
 	url := fmt.Sprintf("%s/eth/v1/beacon/blob_sidecars/%s", c.url, id)
 	req, err := http.NewRequest("GET", url, nil)
@@ -55,31 +53,46 @@ func (c *httpBlobSidecarClient) FetchSidecars(id string, format Format) (int, st
 	if err != nil {
 		return http.StatusInternalServerError, storage.BlobSidecars{}, fmt.Errorf("failed to fetch sidecars: %w", err)
 	}
+	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
 		return response.StatusCode, storage.BlobSidecars{}, nil
 	}
 
-	defer response.Body.Close()
-
 	var sidecars storage.BlobSidecars
 	if format == FormatJson {
-		if err := json.NewDecoder(response.Body).Decode(&sidecars); err != nil {
-			return response.StatusCode, storage.BlobSidecars{}, fmt.Errorf("failed to decode json response: %w", err)
+		if err := decodeJSON(response.Body, &sidecars); err != nil {
+			return response.StatusCode, storage.BlobSidecars{}, err
 		}
 	} else {
-		body, err := io.ReadAll(response.Body)
-		if err != nil {
-			return response.StatusCode, storage.BlobSidecars{}, fmt.Errorf("failed to read response: %w", err)
+		if err := decodeSSZ(response.Body, &sidecars); err != nil {
+			return response.StatusCode, storage.BlobSidecars{}, err
 		}
-
-		s := api.BlobSidecars{}
-		if err := s.UnmarshalSSZ(body); err != nil {
-			return response.StatusCode, storage.BlobSidecars{}, fmt.Errorf("failed to decode ssz response: %w", err)
-		}
-
-		sidecars.Data = s.Sidecars
 	}
 
 	return response.StatusCode, sidecars, nil
+}
+
+// decodeJSON decodes a JSON response body into a BlobSidecars struct.
+func decodeJSON(body io.Reader, sidecars *storage.BlobSidecars) error {
+	if err := json.NewDecoder(body).Decode(sidecars); err != nil {
+		return fmt.Errorf("failed to decode json response: %w", err)
+	}
+	return nil
+}
+
+// decodeSSZ decodes an SSZ response body into a BlobSidecars struct.
+func decodeSSZ(body io.Reader, sidecars *storage.BlobSidecars) error {
+	data, err := io.ReadAll(body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+
+	var s api.BlobSidecars
+	if err := s.UnmarshalSSZ(data); err != nil {
+		return fmt.Errorf("failed to decode ssz response: %w", err)
+	}
+
+	sidecars.Data = s.Sidecars
+	return nil
 }
